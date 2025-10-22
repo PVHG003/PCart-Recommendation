@@ -22,7 +22,7 @@ import uvicorn
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://neondb_owner:npg_4OeluKx7nfHk@ep-withered-lake-adw512mi-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
+    "postgresql://username:password@ep-withered-lake-adw512mi-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
 )
 
 
