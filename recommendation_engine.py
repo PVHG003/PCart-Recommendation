@@ -386,6 +386,7 @@ class CollaborativeRecommender:
             if exclude_purchased:
                 purchased = self.user_item_matrix[user_idx].indices
                 scores[purchased] = -np.inf
+            scores = 1 / (1 + np.exp(-scores))
             # Get top N
             top_indices = np.argsort(scores)[::-1][:top_n]
             recommendations = []
