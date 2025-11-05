@@ -18,8 +18,9 @@ import uvicorn
 # ============================================
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://username:password@ep-withered-lake-adw512mi-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
+    "postgresql://neondb_owner:npg_4OeluKx7nfHk@ep-withered-lake-adw512mi-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
 )
+
 
 def get_engine(url: str = DATABASE_URL) -> create_engine:
     """
@@ -36,6 +37,7 @@ def get_engine(url: str = DATABASE_URL) -> create_engine:
     """
     return create_engine(url, pool_pre_ping=True)
 
+
 def load_products(engine: create_engine) -> pd.DataFrame:
     """
     Loads product data from the database where products are in stock.
@@ -50,20 +52,24 @@ def load_products(engine: create_engine) -> pd.DataFrame:
     Date: November 05, 2025
     """
     query = """
-            SELECT id, 
-                   name, 
-                   description, 
-                   category, 
-                   price, 
-                   mrp, 
-                   images, 
-                   "storeId", 
-                   "inStock", 
-                   "createdAt"
-            FROM "Product"
-            WHERE "inStock" = true 
-            """
+                SELECT p.id, 
+                       p.name, 
+                       p.description, 
+                       p.category, 
+                       p.price, 
+                       p.mrp, 
+                       p.images, 
+                       p."storeId", 
+                       p."inStock", 
+                       p."createdAt",
+                       COALESCE(AVG(r.rating), 0) as rating
+                FROM "Product" p
+                LEFT JOIN "Rating" r ON r."productId" = p.id
+                WHERE p."inStock" = true
+                GROUP BY p.id, p.name, p.description, p.category, p.price, p.mrp, p.images, p."storeId", p."inStock", p."createdAt"
+                """
     return pd.read_sql_query(text(query), engine)
+
 
 def load_ratings(engine: create_engine) -> pd.DataFrame:
     """
@@ -89,6 +95,7 @@ def load_ratings(engine: create_engine) -> pd.DataFrame:
             FROM "Rating" 
             """
     return pd.read_sql_query(text(query), engine)
+
 
 def load_user_interactions(engine: create_engine) -> pd.DataFrame:
     """
@@ -116,6 +123,7 @@ def load_user_interactions(engine: create_engine) -> pd.DataFrame:
             """
     return pd.read_sql_query(text(query), engine)
 
+
 def load_user_ratings_interactions(engine: create_engine) -> pd.DataFrame:
     """
     Combines purchase data and ratings for collaborative filtering.
@@ -142,6 +150,7 @@ def load_user_ratings_interactions(engine: create_engine) -> pd.DataFrame:
             WHERE o.status IN ('DELIVERED', 'SHIPPED') 
             """
     return pd.read_sql_query(text(query), engine)
+
 
 # ============================================
 # 2. CONTENT-BASED FILTERING
@@ -232,6 +241,7 @@ class ContentBasedRecommender:
         except KeyError:
             raise ValueError(f"Product {product_id} not found")
 
+
 # ============================================
 # 3. COLLABORATIVE FILTERING
 # ============================================
@@ -245,7 +255,8 @@ class CollaborativeRecommender:
         self.user_factors = None
         self.item_factors = None
 
-    def fit(self, interactions_df: pd.DataFrame, n_factors: int = 50, n_iterations: int = 15, reg: float = 0.01) -> None:
+    def fit(self, interactions_df: pd.DataFrame, n_factors: int = 50, n_iterations: int = 15,
+            reg: float = 0.01) -> None:
         """
         Trains the collaborative filtering model using Alternating Least Squares (ALS).
 
@@ -310,7 +321,7 @@ class CollaborativeRecommender:
         # Initialize user and item latent factor matrices with small random values
         self.user_factors = np.random.normal(0, 0.1, (n_users, n_factors))
         self.item_factors = np.random.normal(0, 0.1, (n_items, n_factors))
-        
+
         # Iterate through the specified number of ALS iterations
         for iteration in range(n_iterations):
             # Fix item factors and optimize user factors
@@ -329,7 +340,7 @@ class CollaborativeRecommender:
                     b = self.user_item_matrix[u, items_u].toarray().flatten() @ self.item_factors[items_u]
                     # Solve the linear system A * x = b to update user factors for user u
                     self.user_factors[u] = np.linalg.solve(A, b)
-            
+
             # Fix user factors and optimize item factors
             # This step updates item factors while keeping user factors constant
             # Convert user-item matrix to CSC format for efficient column access
@@ -346,7 +357,7 @@ class CollaborativeRecommender:
                     b = user_item_matrix_csc[users_i, i].toarray().flatten() @ self.user_factors[users_i]
                     # Solve the linear system A * x = b to update item factors for item i
                     self.item_factors[i] = np.linalg.solve(A, b)
-            
+
             # Print progress every 5 iterations to monitor training
             if (iteration + 1) % 5 == 0:
                 print(f"  ALS iteration {iteration + 1}/{n_iterations}")
@@ -387,11 +398,13 @@ class CollaborativeRecommender:
         except KeyError:
             raise ValueError(f"User {user_id} not found")
 
+
 # ============================================
 # 4. HYBRID RECOMMENDER
 # ============================================
 class HybridRecommender:
-    def __init__(self, content_model: ContentBasedRecommender, collab_model: CollaborativeRecommender, products_df: pd.DataFrame):
+    def __init__(self, content_model: ContentBasedRecommender, collab_model: CollaborativeRecommender,
+                 products_df: pd.DataFrame):
         self.content_model = content_model
         self.collab_model = collab_model
         self.products_df = products_df
@@ -536,6 +549,7 @@ class HybridRecommender:
             'score': 1.0
         } for _, row in popular.iterrows()]
 
+
 # ============================================
 # 5. FASTAPI APPLICATION
 # ============================================
@@ -557,6 +571,7 @@ content_recommender = None
 collab_recommender = None
 hybrid_recommender = None
 products_df = None
+
 
 @app.on_event("startup")
 async def load_models() -> None:
@@ -635,11 +650,13 @@ async def load_models() -> None:
     print("Recommendation Engine Ready!")
     print("=" * 50)
 
+
 # Pydantic models
 class RecommendationResponse(BaseModel):
     recommendations: List[dict]
     algorithm: str
     count: int
+
 
 @app.get("/")
 async def root() -> dict:
@@ -666,6 +683,7 @@ async def root() -> dict:
         }
     }
 
+
 @app.get("/health")
 async def health() -> dict:
     """
@@ -689,6 +707,7 @@ async def health() -> dict:
             "hybrid": hybrid_recommender is not None
         }
     }
+
 
 @app.get("/api/recommendations/similar/{product_id}", response_model=RecommendationResponse)
 async def get_similar_products(product_id: str, limit: int = 10) -> dict:
@@ -718,6 +737,7 @@ async def get_similar_products(product_id: str, limit: int = 10) -> dict:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 
 @app.get("/api/recommendations/personalized/{user_id}", response_model=RecommendationResponse)
 async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dict:
@@ -798,6 +818,7 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
+
 @app.get("/api/recommendations/hybrid", response_model=RecommendationResponse)
 async def get_hybrid_recommendations(
         user_id: Optional[str] = None,
@@ -860,6 +881,7 @@ async def get_hybrid_recommendations(
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 
 @app.post("/api/recommendations/retrain")
 async def retrain_models(secret_key: str = None) -> dict:
@@ -940,6 +962,7 @@ async def retrain_models(secret_key: str = None) -> dict:
         print(f"\n Retraining failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
 
+
 @app.get("/api/recommendations/popular")
 async def get_popular_products(limit: int = 10) -> dict:
     """
@@ -962,6 +985,7 @@ async def get_popular_products(limit: int = 10) -> dict:
         'id': row['id'],
         'name': row['name'],
         'category': row['category'],
+        'rating': row['rating'],
         'price': float(row['price']) if pd.notna(row['price']) else None,
         'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
         'images': row['images'] if isinstance(row['images'], list) else [],
@@ -973,6 +997,7 @@ async def get_popular_products(limit: int = 10) -> dict:
         "algorithm": "popular",
         "count": len(recommendations)
     }
+
 
 # ============================================
 # 6. MAIN ENTRY POINT
