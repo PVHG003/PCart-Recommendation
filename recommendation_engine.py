@@ -305,51 +305,51 @@ class CollaborativeRecommender:
         Author: Pham Viet Hung
         Date: November 05, 2025
         """
-    # Get the dimensions of the user-item matrix (number of users and items)
-    n_users, n_items = self.user_item_matrix.shape
-    # Initialize user and item latent factor matrices with small random values
-    self.user_factors = np.random.normal(0, 0.1, (n_users, n_factors))
-    self.item_factors = np.random.normal(0, 0.1, (n_items, n_factors))
-    
-    # Iterate through the specified number of ALS iterations
-    for iteration in range(n_iterations):
-        # Fix item factors and optimize user factors
-        # This step updates user factors while keeping item factors constant
-        for u in range(n_users):
-            # Get indices of items the user has interacted with (non-zero entries in the sparse matrix)
-            items_u = self.user_item_matrix[u].indices
-            # Only update if the user has interactions
-            if len(items_u) > 0:
-                # Compute the matrix A = (I^T * I + reg * Identity) for user u
-                # I is the matrix of item factors for items the user interacted with
-                # reg * np.eye(n_factors) adds regularization to prevent overfitting
-                A = self.item_factors[items_u].T @ self.item_factors[items_u] + reg * np.eye(n_factors)
-                # Compute the vector b = (R_u * I), where R_u is the user's interaction scores
-                # Convert sparse matrix row to dense array for computation
-                b = self.user_item_matrix[u, items_u].toarray().flatten() @ self.item_factors[items_u]
-                # Solve the linear system A * x = b to update user factors for user u
-                self.user_factors[u] = np.linalg.solve(A, b)
+        # Get the dimensions of the user-item matrix (number of users and items)
+        n_users, n_items = self.user_item_matrix.shape
+        # Initialize user and item latent factor matrices with small random values
+        self.user_factors = np.random.normal(0, 0.1, (n_users, n_factors))
+        self.item_factors = np.random.normal(0, 0.1, (n_items, n_factors))
         
-        # Fix user factors and optimize item factors
-        # This step updates item factors while keeping user factors constant
-        # Convert user-item matrix to CSC format for efficient column access
-        user_item_matrix_csc = self.user_item_matrix.tocsc()
-        for i in range(n_items):
-            # Get indices of users who interacted with item i
-            users_i = user_item_matrix_csc[:, i].indices
-            # Only update if the item has interactions
-            if len(users_i) > 0:
-                # Compute the matrix A = (U^T * U + reg * Identity) for item i
-                # U is the matrix of user factors for users who interacted with the item
-                A = self.user_factors[users_i].T @ self.user_factors[users_i] + reg * np.eye(n_factors)
-                # Compute the vector b = (R_i * U), where R_i is the interaction scores for item i
-                b = user_item_matrix_csc[users_i, i].toarray().flatten() @ self.user_factors[users_i]
-                # Solve the linear system A * x = b to update item factors for item i
-                self.item_factors[i] = np.linalg.solve(A, b)
-        
-        # Print progress every 5 iterations to monitor training
-        if (iteration + 1) % 5 == 0:
-            print(f"  ALS iteration {iteration + 1}/{n_iterations}")
+        # Iterate through the specified number of ALS iterations
+        for iteration in range(n_iterations):
+            # Fix item factors and optimize user factors
+            # This step updates user factors while keeping item factors constant
+            for u in range(n_users):
+                # Get indices of items the user has interacted with (non-zero entries in the sparse matrix)
+                items_u = self.user_item_matrix[u].indices
+                # Only update if the user has interactions
+                if len(items_u) > 0:
+                    # Compute the matrix A = (I^T * I + reg * Identity) for user u
+                    # I is the matrix of item factors for items the user interacted with
+                    # reg * np.eye(n_factors) adds regularization to prevent overfitting
+                    A = self.item_factors[items_u].T @ self.item_factors[items_u] + reg * np.eye(n_factors)
+                    # Compute the vector b = (R_u * I), where R_u is the user's interaction scores
+                    # Convert sparse matrix row to dense array for computation
+                    b = self.user_item_matrix[u, items_u].toarray().flatten() @ self.item_factors[items_u]
+                    # Solve the linear system A * x = b to update user factors for user u
+                    self.user_factors[u] = np.linalg.solve(A, b)
+            
+            # Fix user factors and optimize item factors
+            # This step updates item factors while keeping user factors constant
+            # Convert user-item matrix to CSC format for efficient column access
+            user_item_matrix_csc = self.user_item_matrix.tocsc()
+            for i in range(n_items):
+                # Get indices of users who interacted with item i
+                users_i = user_item_matrix_csc[:, i].indices
+                # Only update if the item has interactions
+                if len(users_i) > 0:
+                    # Compute the matrix A = (U^T * U + reg * Identity) for item i
+                    # U is the matrix of user factors for users who interacted with the item
+                    A = self.user_factors[users_i].T @ self.user_factors[users_i] + reg * np.eye(n_factors)
+                    # Compute the vector b = (R_i * U), where R_i is the interaction scores for item i
+                    b = user_item_matrix_csc[users_i, i].toarray().flatten() @ self.user_factors[users_i]
+                    # Solve the linear system A * x = b to update item factors for item i
+                    self.item_factors[i] = np.linalg.solve(A, b)
+            
+            # Print progress every 5 iterations to monitor training
+            if (iteration + 1) % 5 == 0:
+                print(f"  ALS iteration {iteration + 1}/{n_iterations}")
 
     def recommend(self, user_id: str, top_n: int = 10, exclude_purchased: bool = True) -> List[dict]:
         """
