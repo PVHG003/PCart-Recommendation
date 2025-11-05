@@ -1,0 +1,40 @@
+- Do not use any emoji/icons
+- comment each functions with a doc string following these rules:
+    - explains the code usage/what it does
+    - what are the inputs and their types, following with their brief description
+    - what are the outputs and their types, following with their brief description
+    - sign the comment with "Author: Pham Viet Hung" and "Date: <today>"
+
+example:
+```python
+def calculate_area(length: float, width: float) -> float:
+    """
+    Calculates the area of a rectangle given its length and width.
+    
+    Args:
+        length (float): The length of the rectangle in units.
+        width (float): The width of the rectangle in units.
+    
+    Returns:
+        float: The area of the rectangle in square units.
+    
+    Author: Pham Viet Hung
+    Date: November 05, 2025
+    """
+    return length * width
+
+def greet_user(name: str) -> str:
+    """
+    Generates a personalized greeting message for the user.
+    
+    Args:
+        name (str): The name of the user to include in the greeting.
+    
+    Returns:
+        str: A greeting message including the user's name.
+    
+    Author: Pham Viet Hung
+    Date: November 05, 2025
+    """
+    return f"Hello, {name}! Welcome back."
+```
