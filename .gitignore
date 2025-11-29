@@ -1,1 +1,4 @@
 /models
+.idea
+.venv
+schema.prisma
