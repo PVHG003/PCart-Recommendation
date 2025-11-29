@@ -33,40 +33,45 @@ def get_engine(url: str = DATABASE_URL) -> create_engine:
         create_engine: A SQLAlchemy engine object for database operations.
 
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     return create_engine(url, pool_pre_ping=True)
 
 
 def load_products(engine: create_engine) -> pd.DataFrame:
     """
-    Loads product data from the database where products are in stock.
+    Loads product data from the database with default variant info where products are in stock.
 
     Args:
         engine (create_engine): The SQLAlchemy engine for database connection.
 
     Returns:
-        pd.DataFrame: A DataFrame containing product details (id, name, description, category, price, etc.).
+        pd.DataFrame: A DataFrame containing product details with default variant information.
 
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     query = """
-                SELECT p.id, 
-                       p.name, 
-                       p.description, 
-                       p.category, 
-                       p.price, 
-                       p.mrp, 
-                       p.images, 
-                       p."storeId", 
-                       p."inStock", 
+                SELECT p.id,
+                       p.name,
+                       p.description,
+                       p.category,
+                       pv.price,
+                       p.images,
+                       p."storeId",
+                       p."inStock",
                        p."createdAt",
-                       COALESCE(AVG(r.rating), 0) as rating
+                       COALESCE(AVG(r.rating), 0) as rating,
+                       pv.id as "variantId",
+                       pv.sku,
+                       pv.stock,
+                       pv."isDefault"
                 FROM "Product" p
+                LEFT JOIN "ProductVariant" pv ON pv."productId" = p.id AND pv."isDefault" = true
                 LEFT JOIN "Rating" r ON r."productId" = p.id
                 WHERE p."inStock" = true
-                GROUP BY p.id, p.name, p.description, p.category, p.price, p.mrp, p.images, p."storeId", p."inStock", p."createdAt"
+                GROUP BY p.id, p.name, p.description, p.category, pv.price, p.images,
+                         p."storeId", p."inStock", p."createdAt", pv.id, pv.sku, pv.stock, pv."isDefault"
                 """
     return pd.read_sql_query(text(query), engine)
 
@@ -82,17 +87,17 @@ def load_ratings(engine: create_engine) -> pd.DataFrame:
         pd.DataFrame: A DataFrame containing rating details (id, rating, review, userId, productId, etc.).
 
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     query = """
-            SELECT id, 
-                   rating, 
-                   review, 
-                   "userId", 
-                   "productId", 
-                   "orderId", 
+            SELECT id,
+                   rating,
+                   review,
+                   "userId",
+                   "productId",
+                   "orderId",
                    "createdAt"
-            FROM "Rating" 
+            FROM "Rating"
             """
     return pd.read_sql_query(text(query), engine)
 
@@ -105,21 +110,22 @@ def load_user_interactions(engine: create_engine) -> pd.DataFrame:
         engine (create_engine): The SQLAlchemy engine for database connection.
 
     Returns:
-        pd.DataFrame: A DataFrame containing user interaction details (userId, productId, quantity, etc.).
+        pd.DataFrame: A DataFrame containing user interaction details (userId, productId, variantId, quantity, etc.).
 
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     query = """
-            SELECT o."userId", 
-                   oi."productId", 
-                   oi.quantity, 
-                   oi.price, 
-                   o."createdAt", 
+            SELECT o."userId",
+                   oi."productId",
+                   oi."variantId",
+                   oi.quantity,
+                   oi.price,
+                   o."createdAt",
                    o.status
             FROM "OrderItem" oi
                      JOIN "Order" o ON oi."orderId" = o.id
-            WHERE o.status IN ('DELIVERED', 'SHIPPED') 
+            WHERE o.status IN ('DELIVERED', 'SHIPPED')
             """
     return pd.read_sql_query(text(query), engine)
 
@@ -127,6 +133,7 @@ def load_user_interactions(engine: create_engine) -> pd.DataFrame:
 def load_user_ratings_interactions(engine: create_engine) -> pd.DataFrame:
     """
     Combines purchase data and ratings for collaborative filtering.
+    Aggregates variant-level purchases to product level.
 
     Args:
         engine (create_engine): The SQLAlchemy engine for database connection.
@@ -135,19 +142,20 @@ def load_user_ratings_interactions(engine: create_engine) -> pd.DataFrame:
         pd.DataFrame: A DataFrame with combined user interaction and rating data (userId, productId, implicit_rating, etc.).
 
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     query = """
-            SELECT o."userId", 
-                   oi."productId", 
-                   COALESCE(r.rating, 3) as implicit_rating, 
-                   oi.quantity, 
-                   o."createdAt"
+            SELECT o."userId",
+                   oi."productId",
+                   COALESCE(r.rating, 3) as implicit_rating,
+                   SUM(oi.quantity) as quantity,
+                   MAX(o."createdAt") as "createdAt"
             FROM "OrderItem" oi
                      JOIN "Order" o ON oi."orderId" = o.id
                      LEFT JOIN "Rating" r ON r."userId" = o."userId"
                 AND r."productId" = oi."productId"
-            WHERE o.status IN ('DELIVERED', 'SHIPPED') 
+            WHERE o.status IN ('DELIVERED', 'SHIPPED')
+            GROUP BY o."userId", oi."productId", r.rating
             """
     return pd.read_sql_query(text(query), engine)
 
@@ -173,9 +181,11 @@ class ContentBasedRecommender:
             None: Updates the instance attributes with trained model components.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
-        self.products_df = products_df.copy()
+        # Remove duplicate products (keep first occurrence with default variant)
+        self.products_df = products_df.drop_duplicates(subset=['id'], keep='first').copy()
+
         # Create combined text field
         self.products_df['combined_text'] = (
                 self.products_df['name'].fillna('') + ' ' +
@@ -211,7 +221,7 @@ class ContentBasedRecommender:
             List[dict]: A list of dictionaries containing recommended product details and similarity scores.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         try:
             # Get product index
@@ -233,9 +243,11 @@ class ContentBasedRecommender:
                     'category': product['category'],
                     'rating': float(product['rating']),
                     'price': float(product['price']) if pd.notna(product['price']) else None,
-                    'mrp': float(product['mrp']) if pd.notna(product['mrp']) else None,
                     'images': product['images'] if isinstance(product['images'], list) else [],
                     'storeId': product['storeId'],
+                    'variantId': product['variantId'] if pd.notna(product.get('variantId')) else None,
+                    'sku': product['sku'] if pd.notna(product.get('sku')) else None,
+                    'stock': int(product['stock']) if pd.notna(product.get('stock')) else 0,
                     'score': float(cosine_sim[i])
                 })
             return recommendations
@@ -260,6 +272,7 @@ class CollaborativeRecommender:
             reg: float = 0.01) -> None:
         """
         Trains the collaborative filtering model using Alternating Least Squares (ALS).
+        Aggregates variant-level interactions to product level.
 
         Args:
             interactions_df (pd.DataFrame): DataFrame containing user-product interactions (userId, productId, quantity, implicit_rating).
@@ -271,13 +284,14 @@ class CollaborativeRecommender:
             None: Updates the instance attributes with trained model components.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
-        # Aggregate interactions per user-product pair
+        # Aggregate interactions per user-product pair (already aggregated in query, but ensure consistency)
         agg_interactions = interactions_df.groupby(['userId', 'productId']).agg({
             'quantity': 'sum',
             'implicit_rating': 'mean'
         }).reset_index()
+
         # Create confidence score (combination of quantity and rating)
         agg_interactions['confidence'] = (
                 agg_interactions['quantity'] *
@@ -315,7 +329,7 @@ class CollaborativeRecommender:
             None: Updates user_factors and item_factors attributes.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         # Get the dimensions of the user-item matrix (number of users and items)
         n_users, n_items = self.user_item_matrix.shape
@@ -326,40 +340,22 @@ class CollaborativeRecommender:
         # Iterate through the specified number of ALS iterations
         for iteration in range(n_iterations):
             # Fix item factors and optimize user factors
-            # This step updates user factors while keeping item factors constant
             for u in range(n_users):
-                # Get indices of items the user has interacted with (non-zero entries in the sparse matrix)
                 items_u = self.user_item_matrix[u].indices
-                # Only update if the user has interactions
                 if len(items_u) > 0:
-                    # Compute the matrix A = (I^T * I + reg * Identity) for user u
-                    # I is the matrix of item factors for items the user interacted with
-                    # reg * np.eye(n_factors) adds regularization to prevent overfitting
                     A = self.item_factors[items_u].T @ self.item_factors[items_u] + reg * np.eye(n_factors)
-                    # Compute the vector b = (R_u * I), where R_u is the user's interaction scores
-                    # Convert sparse matrix row to dense array for computation
                     b = self.user_item_matrix[u, items_u].toarray().flatten() @ self.item_factors[items_u]
-                    # Solve the linear system A * x = b to update user factors for user u
                     self.user_factors[u] = np.linalg.solve(A, b)
 
             # Fix user factors and optimize item factors
-            # This step updates item factors while keeping user factors constant
-            # Convert user-item matrix to CSC format for efficient column access
             user_item_matrix_csc = self.user_item_matrix.tocsc()
             for i in range(n_items):
-                # Get indices of users who interacted with item i
                 users_i = user_item_matrix_csc[:, i].indices
-                # Only update if the item has interactions
                 if len(users_i) > 0:
-                    # Compute the matrix A = (U^T * U + reg * Identity) for item i
-                    # U is the matrix of user factors for users who interacted with the item
                     A = self.user_factors[users_i].T @ self.user_factors[users_i] + reg * np.eye(n_factors)
-                    # Compute the vector b = (R_i * U), where R_i is the interaction scores for item i
                     b = user_item_matrix_csc[users_i, i].toarray().flatten() @ self.user_factors[users_i]
-                    # Solve the linear system A * x = b to update item factors for item i
                     self.item_factors[i] = np.linalg.solve(A, b)
 
-            # Print progress every 5 iterations to monitor training
             if (iteration + 1) % 5 == 0:
                 print(f"  ALS iteration {iteration + 1}/{n_iterations}")
 
@@ -376,7 +372,7 @@ class CollaborativeRecommender:
             List[dict]: A list of dictionaries containing recommended product IDs and scores.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         try:
             user_idx = self.user_idx_map[user_id]
@@ -409,7 +405,8 @@ class HybridRecommender:
                  products_df: pd.DataFrame):
         self.content_model = content_model
         self.collab_model = collab_model
-        self.products_df = products_df
+        # Remove duplicates for lookup
+        self.products_df = products_df.drop_duplicates(subset=['id'], keep='first')
 
     def recommend(self, user_id: Optional[str] = None, product_id: Optional[str] = None, top_n: int = 10) -> List[dict]:
         """
@@ -424,7 +421,7 @@ class HybridRecommender:
             List[dict]: A list of dictionaries containing recommended product details and scores.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         if user_id and product_id:
             # Combine both approaches
@@ -464,7 +461,7 @@ class HybridRecommender:
             List[dict]: A list of merged recommendations with product details and combined scores.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         # Weight: 60% collaborative, 40% content-based
         scores = {}
@@ -485,11 +482,13 @@ class HybridRecommender:
                     'id': pid,
                     'name': product['name'],
                     'category': product['category'],
-                    'rating': float((product['rating'])),
+                    'rating': float(product['rating']),
                     'price': float(product['price']) if pd.notna(product['price']) else None,
-                    'mrp': float(product['mrp']) if pd.notna(product['mrp']) else None,
                     'images': product['images'] if isinstance(product['images'], list) else [],
                     'storeId': product['storeId'],
+                    'variantId': product['variantId'] if pd.notna(product.get('variantId')) else None,
+                    'sku': product['sku'] if pd.notna(product.get('sku')) else None,
+                    'stock': int(product['stock']) if pd.notna(product.get('stock')) else 0,
                     'score': float(score)
                 })
         return recommendations
@@ -505,7 +504,7 @@ class HybridRecommender:
             List[dict]: A list of recommendations enriched with product details (name, category, price, etc.).
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
         enriched = []
         for rec in recs:
@@ -518,11 +517,13 @@ class HybridRecommender:
                     'id': rec['productId'],
                     'name': product['name'],
                     'category': product['category'],
-                    'rating': float((product['rating'])),
+                    'rating': float(product['rating']),
                     'price': float(product['price']) if pd.notna(product['price']) else None,
-                    'mrp': float(product['mrp']) if pd.notna(product['mrp']) else None,
                     'images': product['images'] if isinstance(product['images'], list) else [],
                     'storeId': product['storeId'],
+                    'variantId': product['variantId'] if pd.notna(product.get('variantId')) else None,
+                    'sku': product['sku'] if pd.notna(product.get('sku')) else None,
+                    'stock': int(product['stock']) if pd.notna(product.get('stock')) else 0,
                     'score': rec['score']
                 })
         return enriched
@@ -538,19 +539,21 @@ class HybridRecommender:
             List[dict]: A list of dictionaries containing popular product details and a default score.
 
         Author: Pham Viet Hung
-        Date: November 05, 2025
+        Date: November 29, 2025
         """
-        # Sort by createdAt (most recent) or you could add view/purchase counts
+        # Sort by createdAt (most recent)
         popular = self.products_df.sort_values('createdAt', ascending=False).head(top_n)
         return [{
             'id': row['id'],
             'name': row['name'],
             'category': row['category'],
-            'rating': float((row['rating'])),
+            'rating': float(row['rating']),
             'price': float(row['price']) if pd.notna(row['price']) else None,
-            'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
             'images': row['images'] if isinstance(row['images'], list) else [],
             'storeId': row['storeId'],
+            'variantId': row['variantId'] if pd.notna(row.get('variantId')) else None,
+            'sku': row['sku'] if pd.notna(row.get('sku')) else None,
+            'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
             'score': 1.0
         } for _, row in popular.iterrows()]
 
@@ -558,8 +561,8 @@ class HybridRecommender:
 # ============================================
 # 5. FASTAPI APPLICATION
 # ============================================
-app = FastAPI(title="Ecommerce Recommendation API", version="1.0")
-# Add CORS middleware for Next.js
+app = FastAPI(title="Ecommerce Recommendation API", version="2.0")
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -583,14 +586,8 @@ async def load_models() -> None:
     """
     Loads or trains recommendation models at application startup.
 
-    Args:
-        None
-
-    Returns:
-        None: Updates global model variables (content_recommender, collab_recommender, hybrid_recommender, products_df).
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     global content_recommender, collab_recommender, hybrid_recommender, products_df
     print("=" * 50)
@@ -615,7 +612,7 @@ async def load_models() -> None:
         # Load data
         print("\nLoading data from database...")
         products_df = load_products(engine)
-        print(f"  - Loaded {len(products_df)} products")
+        print(f"  - Loaded {len(products_df)} product records (including variants)")
         interactions_df = load_user_ratings_interactions(engine)
         print(f"  - Loaded {len(interactions_df)} user interactions")
         # Train content-based
@@ -623,7 +620,7 @@ async def load_models() -> None:
         content_recommender = ContentBasedRecommender()
         content_recommender.fit(products_df)
         # Train collaborative (if enough data)
-        if len(interactions_df) >= 50:
+        if len(interactions_df) > 0:
             print("\nTraining collaborative recommender...")
             collab_recommender = CollaborativeRecommender()
             collab_recommender.fit(interactions_df, n_factors=30, n_iterations=10)
@@ -668,18 +665,12 @@ async def root() -> dict:
     """
     Provides a health check endpoint for the recommendation API.
 
-    Args:
-        None
-
-    Returns:
-        dict: A dictionary with API status, version, and loaded model information.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     return {
         "message": "Recommendation API is running",
-        "version": "1.0",
+        "version": "2.0",
         "status": "healthy",
         "models": {
             "content_based": content_recommender is not None,
@@ -694,18 +685,13 @@ async def health() -> dict:
     """
     Provides a detailed health check of the recommendation system.
 
-    Args:
-        None
-
-    Returns:
-        dict: A dictionary with system status, product count, and model loading status.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
+    unique_products = len(products_df['id'].unique()) if products_df is not None else 0
     return {
         "status": "healthy",
-        "products_count": len(products_df) if products_df is not None else 0,
+        "products_count": unique_products,
         "models_loaded": {
             "content": content_recommender is not None,
             "collaborative": collab_recommender is not None,
@@ -719,15 +705,8 @@ async def get_similar_products(product_id: str, limit: int = 10) -> dict:
     """
     Returns products similar to the specified product using content-based filtering.
 
-    Args:
-        product_id (str): The ID of the product to find similar products for.
-        limit (int): Number of recommendations to return. Defaults to 10.
-
-    Returns:
-        dict: A dictionary containing recommendations, algorithm type, and count.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     if not content_recommender:
         raise HTTPException(status_code=503, detail="Content model not loaded")
@@ -749,15 +728,8 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
     """
     Returns personalized recommendations for a user using collaborative or hybrid filtering.
 
-    Args:
-        user_id (str): The ID of the user to generate recommendations for.
-        limit (int): Number of recommendations to return. Defaults to 10.
-
-    Returns:
-        dict: A dictionary containing recommendations, algorithm type, and count.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     try:
         if hybrid_recommender:
@@ -768,36 +740,41 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
             # Enrich with product data
             enriched = []
             for rec in recs:
-                product_match = products_df[products_df['id'] == rec['productId']]
+                product_match = products_df[products_df['id'] == rec['productId']].drop_duplicates(subset=['id'],
+                                                                                                   keep='first')
                 if len(product_match) > 0:
                     product = product_match.iloc[0]
                     enriched.append({
                         'id': rec['productId'],
                         'name': product['name'],
                         'category': product['category'],
-                        'rating': float((product['rating'])),
+                        'rating': float(product['rating']),
                         'price': float(product['price']) if pd.notna(product['price']) else None,
-                        'mrp': float(product['mrp']) if pd.notna(product['mrp']) else None,
                         'images': product['images'] if isinstance(product['images'], list) else [],
                         'storeId': product['storeId'],
+                        'variantId': product['variantId'] if pd.notna(product.get('variantId')) else None,
+                        'sku': product['sku'] if pd.notna(product.get('sku')) else None,
+                        'stock': int(product['stock']) if pd.notna(product.get('stock')) else 0,
                         'score': rec['score']
                     })
             recommendations = enriched
             algorithm = "collaborative"
         else:
             # Fallback to popular products
-            popular = products_df.sort_values('createdAt', ascending=False).head(limit)
+            popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
             recommendations = [{
                 'id': row['id'],
                 'name': row['name'],
                 'category': row['category'],
-                'rating': float((row['rating'])),
+                'rating': float(row['rating']),
                 'price': float(row['price']) if pd.notna(row['price']) else None,
-                'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
                 'images': row['images'] if isinstance(row['images'], list) else [],
                 'storeId': row['storeId'],
+                'variantId': row['variantId'] if pd.notna(row.get('variantId')) else None,
+                'sku': row['sku'] if pd.notna(row.get('sku')) else None,
+                'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
                 'score': 1.0
-            } for _, row in popular.iterrows()]
+            } for _, row in popular_df.iterrows()]
             algorithm = "popular"
         return {
             "recommendations": recommendations,
@@ -806,18 +783,20 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
         }
     except ValueError:
         # User not found, return popular products
-        popular = products_df.sort_values('createdAt', ascending=False).head(limit)
+        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
         recommendations = [{
             'id': row['id'],
             'name': row['name'],
             'category': row['category'],
-            'rating': float((row['rating'])),
+            'rating': float(row['rating']),
             'price': float(row['price']) if pd.notna(row['price']) else None,
-            'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
             'images': row['images'] if isinstance(row['images'], list) else [],
             'storeId': row['storeId'],
+            'variantId': row['variantId'] if pd.notna(row.get('variantId')) else None,
+            'sku': row['sku'] if pd.notna(row.get('sku')) else None,
+            'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
             'score': 1.0
-        } for _, row in popular.iterrows()]
+        } for _, row in popular_df.iterrows()]
         return {
             "recommendations": recommendations,
             "algorithm": "popular",
@@ -836,31 +815,25 @@ async def get_hybrid_recommendations(
     """
     Returns hybrid recommendations combining collaborative and content-based filtering.
 
-    Args:
-        user_id (Optional[str]): The ID of the user for collaborative filtering. Defaults to None.
-        product_id (Optional[str]): The ID of the product for content-based filtering. Defaults to None.
-        limit (int): Number of recommendations to return. Defaults to 10.
-
-    Returns:
-        dict: A dictionary containing recommendations, algorithm type, and count.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     if not user_id and not product_id:
         # Return popular products
-        popular = products_df.sort_values('createdAt', ascending=False).head(limit)
+        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
         recommendations = [{
             'id': row['id'],
             'name': row['name'],
             'category': row['category'],
-            'rating': float((row['rating'])),
+            'rating': float(row['rating']),
             'price': float(row['price']) if pd.notna(row['price']) else None,
-            'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
             'images': row['images'] if isinstance(row['images'], list) else [],
             'storeId': row['storeId'],
+            'variantId': row['variantId'] if pd.notna(row.get('variantId')) else None,
+            'sku': row['sku'] if pd.notna(row.get('sku')) else None,
+            'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
             'score': 1.0
-        } for _, row in popular.iterrows()]
+        } for _, row in popular_df.iterrows()]
         return {
             "recommendations": recommendations,
             "algorithm": "popular",
@@ -897,18 +870,9 @@ async def retrain_models(secret_key: str = None) -> dict:
     """
     Retrains all recommendation models and updates global model variables.
 
-    Args:
-        secret_key (str): Optional secret key for authentication. Defaults to None.
-
-    Returns:
-        dict: A dictionary with retraining status, product count, interaction count, and model update status.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
-    # Optional: Add authentication
-    # if secret_key != os.getenv("RETRAIN_SECRET_KEY"):
-    #     raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         print("\n" + "=" * 50)
         print("Starting model retraining...")
@@ -917,7 +881,7 @@ async def retrain_models(secret_key: str = None) -> dict:
         # Reload data
         print("\nLoading fresh data from database...")
         new_products_df = load_products(engine)
-        print(f"  - Loaded {len(new_products_df)} products")
+        print(f"  - Loaded {len(new_products_df)} product records")
         interactions_df = load_user_ratings_interactions(engine)
         print(f"  - Loaded {len(interactions_df)} interactions")
         # Retrain content-based
@@ -957,9 +921,11 @@ async def retrain_models(secret_key: str = None) -> dict:
         print("=" * 50)
         print("Retraining complete!")
         print("=" * 50)
+
+        unique_products = len(products_df['id'].unique())
         return {
             "message": "Models retrained successfully",
-            "products_count": len(products_df),
+            "products_count": unique_products,
             "interactions_count": len(interactions_df),
             "models_updated": {
                 "content": True,
@@ -968,7 +934,7 @@ async def retrain_models(secret_key: str = None) -> dict:
             }
         }
     except Exception as e:
-        print(f"\n Retraining failed: {str(e)}")
+        print(f"\n❌ Retraining failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
 
 
@@ -977,30 +943,26 @@ async def get_popular_products(limit: int = 10) -> dict:
     """
     Returns a list of popular or trending products based on recency.
 
-    Args:
-        limit (int): Number of popular products to return. Defaults to 10.
-
-    Returns:
-        dict: A dictionary containing popular product recommendations, algorithm type, and count.
-
     Author: Pham Viet Hung
-    Date: November 05, 2025
+    Date: November 29, 2025
     """
     if products_df is None:
         raise HTTPException(status_code=503, detail="Products data not loaded")
-    # Return most recent products (you can customize this logic)
-    popular = products_df.sort_values('createdAt', ascending=False).head(limit)
+    # Return most recent products (deduplicated)
+    popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
     recommendations = [{
         'id': row['id'],
         'name': row['name'],
         'category': row['category'],
-        'rating': row['rating'],
+        'rating': float(row['rating']),
         'price': float(row['price']) if pd.notna(row['price']) else None,
-        'mrp': float(row['mrp']) if pd.notna(row['mrp']) else None,
         'images': row['images'] if isinstance(row['images'], list) else [],
         'storeId': row['storeId'],
+        'variantId': row['variantId'] if pd.notna(row.get('variantId')) else None,
+        'sku': row['sku'] if pd.notna(row.get('sku')) else None,
+        'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
         'inStock': row['inStock']
-    } for _, row in popular.iterrows()]
+    } for _, row in popular_df.iterrows()]
     return {
         "recommendations": recommendations,
         "algorithm": "popular",
