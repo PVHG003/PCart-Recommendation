@@ -741,8 +741,7 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
             # Enrich with product data
             enriched = []
             for rec in recs:
-                product_match = products_df[products_df['id'] == rec['productId']].drop_duplicates(subset=['id'],
-                                                                                                   keep='first')
+                product_match = products_df[products_df['id'] == rec['productId']].drop_duplicates(subset=['id'], keep='first')
                 if len(product_match) > 0:
                     product = product_match.iloc[0]
                     enriched.append({
