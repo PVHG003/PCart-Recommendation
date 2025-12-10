@@ -147,15 +147,16 @@ def load_user_ratings_interactions(engine: create_engine) -> pd.DataFrame:
     query = """
             SELECT o."userId",
                    oi."productId",
-                   COALESCE(r.rating, 3) as implicit_rating,
+                   COALESCE(AVG(r.rating), 3) as implicit_rating,
                    SUM(oi.quantity) as quantity,
                    MAX(o."createdAt") as "createdAt"
             FROM "OrderItem" oi
                      JOIN "Order" o ON oi."orderId" = o.id
                      LEFT JOIN "Rating" r ON r."userId" = o."userId"
                 AND r."productId" = oi."productId"
+                AND r."orderId" = o.id
             WHERE o.status IN ('DELIVERED', 'SHIPPED')
-            GROUP BY o."userId", oi."productId", r.rating
+            GROUP BY o."userId", oi."productId"
             """
     return pd.read_sql_query(text(query), engine)
 
@@ -541,8 +542,8 @@ class HybridRecommender:
         Author: Pham Viet Hung
         Date: November 29, 2025
         """
-        # Sort by createdAt (most recent)
-        popular = self.products_df.sort_values('createdAt', ascending=False).head(top_n)
+        # Sort by rating (highest rated)
+        popular = self.products_df.sort_values('rating', ascending=False).head(top_n)
         return [{
             'id': row['id'],
             'name': row['name'],
@@ -761,7 +762,7 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
             algorithm = "collaborative"
         else:
             # Fallback to popular products
-            popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
+            popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('rating', ascending=False).head(limit)
             recommendations = [{
                 'id': row['id'],
                 'name': row['name'],
@@ -783,7 +784,7 @@ async def get_personalized_recommendations(user_id: str, limit: int = 10) -> dic
         }
     except ValueError:
         # User not found, return popular products
-        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
+        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('rating', ascending=False).head(limit)
         recommendations = [{
             'id': row['id'],
             'name': row['name'],
@@ -820,7 +821,7 @@ async def get_hybrid_recommendations(
     """
     if not user_id and not product_id:
         # Return popular products
-        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
+        popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('rating', ascending=False).head(limit)
         recommendations = [{
             'id': row['id'],
             'name': row['name'],
@@ -941,15 +942,15 @@ async def retrain_models(secret_key: str = None) -> dict:
 @app.get("/api/recommendations/popular")
 async def get_popular_products(limit: int = 10) -> dict:
     """
-    Returns a list of popular or trending products based on recency.
+    Returns a list of popular products based on rating.
 
     Author: Pham Viet Hung
     Date: November 29, 2025
     """
     if products_df is None:
         raise HTTPException(status_code=503, detail="Products data not loaded")
-    # Return most recent products (deduplicated)
-    popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('createdAt', ascending=False).head(limit)
+    # Return highest rated products (deduplicated)
+    popular_df = products_df.drop_duplicates(subset=['id'], keep='first').sort_values('rating', ascending=False).head(limit)
     recommendations = [{
         'id': row['id'],
         'name': row['name'],
