@@ -39,41 +39,44 @@ def get_engine(url: str = DATABASE_URL) -> create_engine:
 
 
 def load_products(engine: create_engine) -> pd.DataFrame:
-    """
-    Loads product data from the database with default variant info where products are in stock.
-
-    Args:
-        engine (create_engine): The SQLAlchemy engine for database connection.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing product details with default variant information.
-
-    Author: Pham Viet Hung
-    Date: November 29, 2025
-    """
     query = """
-                SELECT p.id,
-                       p.name,
-                       p.description,
-                       p.category,
-                       pv.price,
-                       p.images,
-                       p."storeId",
-                       p."inStock",
-                       p."createdAt",
-                       COALESCE(AVG(r.rating), 0) as rating,
-                       pv.id as "variantId",
-                       pv.sku,
-                       pv.stock,
-                       pv."isDefault"
-                FROM "Product" p
-                LEFT JOIN "ProductVariant" pv ON pv."productId" = p.id AND pv."isDefault" = true
-                LEFT JOIN "Rating" r ON r."productId" = p.id
-                WHERE p."inStock" = true
-                GROUP BY p.id, p.name, p.description, p.category, pv.price, p.images,
-                         p."storeId", p."inStock", p."createdAt", pv.id, pv.sku, pv.stock, pv."isDefault"
-                """
-    return pd.read_sql_query(text(query), engine)
+        SELECT 
+            p.id, 
+            p.name, 
+            p.description, 
+            p.category,
+            COALESCE(pv.price, 0) as price,
+            COALESCE(pv.images, p.images, ARRAY[]::text[]) as images,
+            p."storeId", 
+            p."inStock", 
+            p."createdAt",
+            COALESCE(AVG(r.rating), 0)::FLOAT as avg_rating
+        FROM "Product" p
+        LEFT JOIN "ProductVariant" pv 
+            ON pv."productId" = p.id 
+            AND pv."isDefault" = true                 
+        LEFT JOIN "Rating" r ON r."productId" = p.id
+        WHERE p."inStock" = true
+        GROUP BY p.id, pv.price, pv.images, p.images, p."storeId", p."inStock", p."createdAt"
+    """
+    df = pd.read_sql_query(text(query), engine)
+    
+    df = df.rename(columns={'avg_rating': 'rating'})
+    df['rating'] = df['rating'].fillna(0.0).astype(float)
+    df['price'] = df['price'].fillna(0).astype(float)
+    
+   
+    def ensure_list(img):
+        if img is None or img == [] or img == ['']:
+            return []
+        if isinstance(img, str):
+            return [img]
+        return list(img)
+    
+    df['images'] = df['images'].apply(ensure_list)
+
+    return df
+
 
 
 def load_ratings(engine: create_engine) -> pd.DataFrame:
@@ -357,6 +360,7 @@ class CollaborativeRecommender:
                     b = user_item_matrix_csc[users_i, i].toarray().flatten() @ self.user_factors[users_i]
                     self.item_factors[i] = np.linalg.solve(A, b)
 
+
             if (iteration + 1) % 5 == 0:
                 print(f"  ALS iteration {iteration + 1}/{n_iterations}")
 
@@ -483,7 +487,9 @@ class HybridRecommender:
                     'id': pid,
                     'name': product['name'],
                     'category': product['category'],
-                    'rating': float(product['rating']),
+
+                    'rating': float((product['rating'])),
+
                     'price': float(product['price']) if pd.notna(product['price']) else None,
                     'images': product['images'] if isinstance(product['images'], list) else [],
                     'storeId': product['storeId'],
@@ -519,6 +525,7 @@ class HybridRecommender:
                     'name': product['name'],
                     'category': product['category'],
                     'rating': float(product['rating']),
+
                     'price': float(product['price']) if pd.notna(product['price']) else None,
                     'images': product['images'] if isinstance(product['images'], list) else [],
                     'storeId': product['storeId'],
@@ -548,7 +555,8 @@ class HybridRecommender:
             'id': row['id'],
             'name': row['name'],
             'category': row['category'],
-            'rating': float(row['rating']),
+
+            'rating': float((row['rating'])),
             'price': float(row['price']) if pd.notna(row['price']) else None,
             'images': row['images'] if isinstance(row['images'], list) else [],
             'storeId': row['storeId'],
@@ -963,6 +971,31 @@ async def get_popular_products(limit: int = 10) -> dict:
         'stock': int(row['stock']) if pd.notna(row.get('stock')) else 0,
         'inStock': row['inStock']
     } for _, row in popular_df.iterrows()]
+    return {
+        "recommendations": recommendations,
+        "algorithm": "popular",
+        "count": len(recommendations)
+    }
+@app.get("/api/recommendations/newest")
+async def get_newest_products(limit: int = 10) -> dict:
+
+    if products_df is None:
+        raise HTTPException(status_code=503, detail="Products data not loaded")
+
+    popular = products_df.sort_values('createdAt', ascending=False).head(limit)
+    recommendations = []
+    for _, row in popular.iterrows():
+        recommendations.append({
+            'id': row['id'],
+            'name': row['name'],
+            'category': row['category'],
+            'rating': float(row.get('rating', 0.0)),  # AN TOÀN
+            'price': float(row['price']) if pd.notna(row['price']) else None,
+            'images': row['images'] if isinstance(row['images'], list) else [],
+            'storeId': row['storeId'],
+            'inStock': row.get('inStock', True)
+        })
+
     return {
         "recommendations": recommendations,
         "algorithm": "popular",
